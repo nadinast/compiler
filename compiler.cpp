@@ -517,7 +517,46 @@ int consume_token(int code)
 		return 1;
 	}
 	return 0;
-}int rule_while()
+}
+int decl_struct();
+int decl_var();
+int array_decl();
+int typebase();
+int type_name();
+int decl_func();
+int stm();
+int stm_compound();
+int expr();
+int expr_assign();
+int expr_or();
+int expr_and();
+int expr_eq();
+int expr_rel();
+int expr_add();
+int expr_mul();
+int expr_cast();
+int expr_unary();
+int expr_postfix();
+int expr_primary();
+int rule_if();
+int rule_while();
+int rule_for();
+int rule_break();
+int rule_return();
+
+
+int unit() {
+	Token *startTk = crntTk;
+	while (1) {
+		if (decl_struct()) continue;
+		if (decl_func()) continue;
+		if (decl_var()) continue;
+		break;
+	}
+	return 0;
+}
+
+int rule_while()
 {
 	Token *startTk = crntTk;
 	if (consume_token(WHILE)) {
@@ -571,14 +610,14 @@ int stm() {
 	if (stm_compound()) return 1;
 	if (rule_if()) return 1;
 	if (rule_while()) return 1;
-	//if (rule_for()) return 1;
+	if (rule_for()) return 1;
 	if (rule_break()) return 1;
-	//if (rule_return()) return 1;
-	//expr();
-	//Token *startTk = crntTk;
-	//if (consume_token(SEMICOLON)) return 1;
-	//crntTk = startTk;
-	//return 0;
+	if (rule_return()) return 1;
+	expr();
+	Token *startTk = crntTk;
+	if (consume_token(SEMICOLON)) return 1;
+	crntTk = startTk;
+	return 0;
 }
 
 int stm_compound() {
@@ -650,6 +689,94 @@ int expr_and() {
 int expr_and1() {
 
 }
+
+int typebase() {
+	Token *startTk = crntTk;
+	if (consume_token(INT)) return 1;
+	if (consume_token(DOUBLE)) return 1;
+	if (consume_token(CHAR)) return 1;
+	if (consume_token(STRUCT)) {
+		if (consume_token(ID))
+			return 1;
+		else tkerr("Missing struct ID");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int decl_struct() {
+	Token *startTk = crntTk;
+	if (consume_token(STRUCT)) {
+		if (consume_token(ID)) {
+			if (consume_token(LACC)) {
+				while (1) {
+					if (decl_var())
+						continue;
+					break;
+				}
+				if (consume_token(RACC)) {
+					if (consume_token(SEMICOLON))
+						return 1;
+					else
+						tkerr("Missing semicolon at struct declaration");
+				}else
+					tkerr("Missing '}' at structure declaration");
+			}else
+				tkerr("Missing '{' at structure declaration");
+		}else
+			tkerr("Missing structure ID at structure declaration");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int decl_var() {
+	Token *startTk = crntTk;
+	if (typebase()) {
+		if (consume_token(ID)) {
+			array_decl();
+			while (1) {
+				if (consume_token(COMMA)) {
+					if (consume_token(ID)) {
+						array_decl();
+						continue;
+					}else
+						tkerr("Missing ID after comma at variable declaration");
+				}
+				break; 
+			}
+			if (consume_token(SEMICOLON))
+				return 1;
+			else
+				tkerr("Missing ',' at the end of the variable declaration");
+		}else
+			tkerr("Missing ID at variable declaration");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int array_decl() {
+	Token *startTk = crntTk;
+	if (consume_token(LBRACKET)) {
+		expr();
+		if (consume_token(RBRACKET))
+			return 1;
+		else
+			tkerr("Missing ']' at array declaration");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int type_name() {
+	if (typebase()) {
+		array_decl();
+		return 1;
+	}
+	return 0;
+}
+
 
 //------------------------------
 //SYNTACTIC ANALYZER END
