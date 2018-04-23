@@ -1,22 +1,24 @@
-// compiler.cpp : Defines the entry point for the console application.
-//
-
 #include "stdafx.h"
 #include<stdio.h>
 #include<stdlib.h>
 #include<stdarg.h>
 #include<ctype.h>
 #include<string.h>
+
+
 #pragma warning(disable : 4996)  
 #define SAFEALLOC(var,Type) if((var=(Type*)malloc(sizeof(Type)))==NULL)err("not enough memory");
 
+
+//Syntax analyzer main funtion definition
+int unit();
 
 
 //LEXICAL ANALYZER BEGIN
 //------------------------------
 
 //token codes
-enum {
+enum token_codes{
 	ID, BREAK, CHAR, DOUBLE, ELSE, FOR, IF, INT, RETURN, STRUCT, VOID, WHILE,
 	END, CT_INT, CT_REAL, CT_CHAR, CT_STRING, ASSIGN, ADD, SUB,
 	MUL, DIV, DOT, AND, OR, NOT, EQUAL, NOTEQ, LESS, LESSEQ, GREATER,
@@ -157,7 +159,10 @@ void consume_comments(FILE* fp, int first_char) {
 					c = fgetc(fp);
 				} while (c != '\n' && c != '\r' && c != '\0' && c != EOF);
 				if (c == EOF)
-					exit(0); //go to next step of compilation actually
+					if (unit()) {  //go to syntax alaysis
+						printf("Lexical and syntactical analysis OK!\n");
+						exit(0);
+					}
 			else
 				if (c == '*')
 					consume_multi_line_comments(fp);
@@ -175,7 +180,10 @@ int getNextToken(FILE * fp, int first_char) {
 	char *token_name = (char *)calloc(100, sizeof(char));
 	int cnt = 0;
 	if (ch == EOF) 
-		exit(0); //go to next step of compilation actually
+		if (unit()) {  //go to syntax alaysis
+			printf("Lexical and syntactical analysis OK!\n");
+			exit(0);
+		}
 	while (1) {
 		switch (state) {
 			//no characters received yet -> initial state
@@ -524,6 +532,7 @@ int array_decl();
 int typebase();
 int type_name();
 int decl_func();
+int func_arg();
 int stm();
 int stm_compound();
 int expr();
@@ -546,13 +555,71 @@ int rule_return();
 
 
 int unit() {
-	Token *startTk = crntTk;
-	while (1) {
-		if (decl_struct()) continue;
-		if (decl_func()) continue;
-		if (decl_var()) continue;
+	crntTk = tokens;
+	while (crntTk) {
+		if (decl_struct()) 
+			continue;
+		if (decl_func()) 
+			continue;
+		if (decl_var()) 
+			continue;
 		break;
 	}
+	return 1;
+}
+
+int func_arg() {
+	Token *startTk = crntTk;
+	if (typebase()) {
+		if (consume_token(ID)) {
+			array_decl();
+			return 1;
+		}else
+			tkerr("Missing function argument ID");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int function_body() {
+	Token *startTk = crntTk;
+	if (consume_token(LPAR)) {
+		if (func_arg()) {
+			while (1) {
+				if (consume_token(COMMA)) {
+					if (func_arg()) 
+						continue;
+					else 
+						tkerr("Missing function argument after comma");
+				}
+			    break;
+			}
+		}
+		if (consume_token(RPAR)) {
+			if (stm_compound())
+				return 1;
+			else tkerr("Missing compound statement in function body");
+		}else
+			tkerr("Missing ')' in function arguments");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int decl_func() {
+	Token *startTk = crntTk;
+	if (typebase())
+		consume_token(MUL);
+	else
+		if (!consume_token(VOID))
+			return 0;
+	if (consume_token(ID)) {
+		if (function_body()){
+			return 1;
+		}
+		tkerr("Error on declarig");
+	}
+	crntTk = startTk;
 	return 0;
 }
 
@@ -585,13 +652,11 @@ int rule_if() {
 			if (expr()) {
 				if (consume_token(RPAR)) {
 					if (stm()) {
-						startTk = crntTk;
 						if (consume_token(ELSE)) {
 							if (stm())
 								return 1;
 							else tkerr("Missing else statement");
 						}
-						crntTk = startTk;
 						return 1;
 					}
 					else tkerr("Missing if statement");
@@ -606,17 +671,62 @@ int rule_if() {
 	return 0;
 }
 
-int stm() {
-	if (stm_compound()) return 1;
-	if (rule_if()) return 1;
-	if (rule_while()) return 1;
-	if (rule_for()) return 1;
-	if (rule_break()) return 1;
-	if (rule_return()) return 1;
-	expr();
+int rule_for() {
 	Token *startTk = crntTk;
-	if (consume_token(SEMICOLON)) return 1;
+	if (consume_token(FOR)) {
+		if (consume_token(LPAR)) {
+			expr();
+			if (consume_token(SEMICOLON)) {
+				expr();
+				if (consume_token(SEMICOLON)) {
+					expr();
+					if (consume_token(RPAR)) {
+						if (stm())
+							return 1;
+						else
+							tkerr("Missing for statement");
+					}else
+						tkerr("Missing ')' in for statement");
+				}else
+					tkerr("Missing ';' in for statement");
+			}else
+				tkerr("Missing ';' for statement");
+		}else
+			tkerr("Missing '(' for statement");
+	}
 	crntTk = startTk;
+	return 0;
+}
+
+int rule_return() {
+	Token *startTk = crntTk;
+	if (consume_token(RETURN)) {
+		expr();
+		if (consume_token(SEMICOLON))
+			return 1;
+		else
+			tkerr("Missing ';' after return");
+	}
+	crntTk = startTk;
+	return 0;
+}
+
+int stm() {
+	if (stm_compound()) 
+		return 1;
+	if (rule_if()) 
+		return 1;
+	if (rule_while()) 
+		return 1;
+	if (rule_for()) 
+		return 1;
+	if (rule_break()) 
+		return 1;
+	if (rule_return()) 
+		return 1;
+	expr();
+	if (consume_token(SEMICOLON)) 
+		return 1;
 	return 0;
 }
 
@@ -643,19 +753,53 @@ int expr() {
 
 int expr_assign() {
 	Token *startTk = crntTk;
-	if (expr_unary()) {
+	if (consume_token(SUB) || consume_token(NOT)) {
+		if (expr_unary()) {
+			if (consume_token(ASSIGN)) {
+				if (expr_assign()) {
+					return 1;
+				}
+				tkerr("Missing assign expression");
+			}else
+			   tkerr("Missing '=' in assign expression");
+		}
+		return 0;
+	}
+	if (expr_postfix()) {
 		if (consume_token(ASSIGN)) {
 			if (expr_assign()) {
 				return 1;
 			}
-			if (expr_or()) {
-				return 1;
-			}
-			return 0;
-		}
+			tkerr("Missing assign expression");
+		}	
 	}
 	crntTk = startTk;
+	/*if (expr_unary()) {
+		if (consume_token(ASSIGN)) {
+			if (expr_assign()) {
+				return 1;
+			}
+			tkerr("Missing assign expression");
+		}else
+			tkerr("Missing '=' in assign expression");
+	}*/
+	if (expr_or()) 
+		return 1;
+	crntTk = startTk;
 	return 0;
+}
+
+int expr_or1() {
+	Token *startTk = crntTk;
+	if (consume_token(OR)) {
+		if (expr_and()) {
+			expr_or1();
+			return 1;
+		}else
+			tkerr("Missing expression after '||'");
+	}
+	crntTk = startTk;
+	return 1;
 }
 
 int expr_or() {
@@ -666,38 +810,299 @@ int expr_or() {
 	return 0;
 }
 
-int expr_or1() {
+int expr_and1() {
 	Token *startTk = crntTk;
-	if (consume_token(OR)) {
-		if (expr_and()) {
-			expr_or1();
+	if (consume_token(AND)) {
+		if (expr_eq()) {
+			expr_and1();
 			return 1;
 		}
+		tkerr("Missing expression after '&&'");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_and() {
+	if (expr_eq()) {
+		if (expr_and1())
+			return 1;
+	}
+	return 0;
+}
+
+int expr_eq1() {
+	Token *startTk = crntTk;
+	if (consume_token(EQUAL)) {
+		if (expr_rel()) {
+			expr_eq1();
+			return 1;
+		}
+		tkerr("Missing expression after '=='");
+	}
+	if (consume_token(NOTEQ)) {
+		if (expr_rel()) {
+			expr_eq1();
+			return 1;
+		}
+		tkerr("Missing expression after '=='");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_eq() {
+	if (expr_rel()) {
+		if (expr_eq1())
+			return 1;
+	}
+	return 0;
+}
+
+int expr_rel1() {
+	Token *startTk = crntTk;
+	if (consume_token(LESS)) {
+		if (expr_add()) {
+			expr_rel1();
+			return 1;
+		}
+		tkerr("Missing expression after '<'");
+	}
+	if (consume_token(LESSEQ)) {
+		if (expr_add()) {
+			expr_rel1();
+			return 1;
+		}
+		tkerr("Missing expression after '<='");
+	}
+	if (consume_token(GREATER)) {
+		if (expr_add()) {
+			expr_rel1();
+			return 1;
+		}
+		tkerr("Missing expression after '>'");
+	}
+	if (consume_token(GREATEREQ)) {
+		if (expr_add()) {
+			expr_rel1();
+			return 1;
+		}
+		tkerr("Missing expression after '>='");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_rel() {
+	if (expr_add()) {
+		if (expr_rel1())
+			return 1;
+	}
+	return 0;
+}
+
+int expr_add1() {
+	Token *startTk = crntTk;
+	if (consume_token(ADD)) {
+		if (expr_mul()) {
+			expr_add1();
+			return 1;
+		}
+		tkerr("Missing expression after '+'");
+	}
+	if (consume_token(SUB)) {
+		if (expr_mul()) {
+			expr_add1();
+			return 1;
+		}
+		tkerr("Missing expression after '-'");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_add() {
+	if (expr_mul()) {
+		if (expr_add1())
+			return 1;
+	}
+	return 0;
+}
+
+int expr_mul1() {
+	Token *startTk = crntTk;
+	if (consume_token(MUL)) {
+		if (expr_cast()) {
+			expr_mul1();
+			return 1;
+		}
+		tkerr("Missing expression after '*'");
+	}
+	if (consume_token(DIV)) {
+		if (expr_cast()) {
+			expr_mul1();
+			return 1;
+		}
+		tkerr("Missing expression after '/'");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_mul() {
+	if (expr_cast()) {
+		if (expr_mul1())
+			return 1;
+	}
+	return 0;
+}
+
+int expr_cast() {
+	Token *startTk = crntTk;
+	if (consume_token(LPAR)) {
+		if (type_name()) {
+			if (consume_token(RPAR)) {
+				if (expr_cast()) 
+					return 1;
+				tkerr("Missing expression in cast");
+			}else
+				tkerr("Missing ')' at expression cast");
+		}else
+			tkerr("Missing type name in cast");
+	}
+	if (expr_unary()) 
+		return 1;
+	crntTk = startTk;
+	return 0;
+}
+
+int expr_unary() {
+	Token *startTk = crntTk;
+	if (consume_token(SUB)) {
+		if (expr_unary()) 
+			return 1;
+		tkerr("Missing unary expression");
+	}
+	if (consume_token(NOT)) {
+		if (expr_unary()) 
+			return 1;
+		tkerr("Missing unary expression");
+	}
+	if (expr_postfix()) 
+		return 1;
+	crntTk = startTk;
+	return 0;
+}
+
+int expr_postfix1() {
+	Token *startTk = crntTk;
+	if (consume_token(LBRACKET)) {
+		if (expr()) {
+			if (consume_token(RBRACKET)) {
+				if (expr_postfix1()) 
+					return 1;
+				//tkerr("Missing postfix expression");
+			}else
+				tkerr("Missing ']' in postfix expression");
+		}else
+			tkerr("Missing expression in postfix expression");
+	}
+	if (consume_token(DOT)) {
+		if (consume_token(ID)) {
+			if(expr_postfix1()) 
+				return 1;
+			//tkerr("Missing postfix expression");
+		}else
+			tkerr("Missing ID in postfix expression");
+	}
+	crntTk = startTk;
+	return 1;
+}
+
+int expr_postfix() {
+	if (expr_primary()) {
+		if (expr_postfix1()) {
+			//printf("Postfix expression\n");
+			return 1;
+		}
+	}
+	return 0;
+}
+
+int expr_primary() {
+	Token *startTk = crntTk;
+	if (consume_token(ID)) {
+		if (consume_token(LPAR)) {
+			if (expr()) {
+				while (1) {
+					if (consume_token(COMMA)) {
+						if (expr()) 
+							continue;
+						else 
+							tkerr("Missing expression after ','");
+					}
+					break;
+				}
+			}
+			if (consume_token(RPAR)) {
+				//printf("Expression\n");
+				return 1;
+			}
+			else
+				tkerr("Missing ')' in expression");
+		}
+		//printf("ID expression primary\n");
+		return 1;
+	}
+	if (consume_token(CT_INT)) {
+		//printf("Int expression\n");
+		return 1;
+	}
+	if (consume_token(CT_REAL)) {
+		//printf("Real expression\n");
+		return 1;
+	}
+	if (consume_token(CT_CHAR)) {
+		//printf("Character expression\n");
+		return 1;
+	}
+	if (consume_token(CT_STRING)) {
+		//printf("String expression\n");
+		return 1;
+	}
+	if (consume_token(LPAR)) {
+		if (expr()) {
+			if (consume_token(RPAR)) {
+				//printf("Expr primary\n");
+				return 1;
+			}
+			tkerr("Missing ')' in expression");
+		}else
+			tkerr("Missing expression after '('");
 	}
 	crntTk = startTk;
 	return 0;
 }
 
-int expr_and() {
-	if (expr_and()) {
-		if (expr_or1())
-			return 1;
-	}
-	return 0;
-}
-
-int expr_and1() {
-
-}
-
 int typebase() {
 	Token *startTk = crntTk;
-	if (consume_token(INT)) return 1;
-	if (consume_token(DOUBLE)) return 1;
-	if (consume_token(CHAR)) return 1;
+	if (consume_token(INT)) {
+		//printf("Int type\n");
+		return 1;
+	}
+	if (consume_token(DOUBLE)) {
+		//printf("Double type\n");
+		return 1;
+	}
+	if (consume_token(CHAR)) {
+		//printf("Char type\n");
+		return 1;
+	}
 	if (consume_token(STRUCT)) {
-		if (consume_token(ID))
+		if (consume_token(ID)) {
+			//printf("Struct type\n");
 			return 1;
+		}
 		else tkerr("Missing struct ID");
 	}
 	crntTk = startTk;
@@ -715,8 +1120,10 @@ int decl_struct() {
 					break;
 				}
 				if (consume_token(RACC)) {
-					if (consume_token(SEMICOLON))
+					if (consume_token(SEMICOLON)) {
+						//printf("Structure declared\n");
 						return 1;
+					}
 					else
 						tkerr("Missing semicolon at struct declaration");
 				}else
@@ -745,10 +1152,12 @@ int decl_var() {
 				}
 				break; 
 			}
-			if (consume_token(SEMICOLON))
+			if (consume_token(SEMICOLON)) {
+				//printf("Variable declared\n");
 				return 1;
+			}
 			else
-				tkerr("Missing ',' at the end of the variable declaration");
+				tkerr("Missing ';' at the end of the variable declaration");
 		}else
 			tkerr("Missing ID at variable declaration");
 	}
@@ -760,10 +1169,11 @@ int array_decl() {
 	Token *startTk = crntTk;
 	if (consume_token(LBRACKET)) {
 		expr();
-		if (consume_token(RBRACKET))
+		if (consume_token(RBRACKET)) {
+			//printf("Array declared\n");
 			return 1;
-		else
-			tkerr("Missing ']' at array declaration");
+		}
+		tkerr("Missing ']' at array declaration");
 	}
 	crntTk = startTk;
 	return 0;
@@ -772,6 +1182,7 @@ int array_decl() {
 int type_name() {
 	if (typebase()) {
 		array_decl();
+		//printf("Type name\n");
 		return 1;
 	}
 	return 0;
