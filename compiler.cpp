@@ -509,6 +509,145 @@ int getNextToken(FILE * fp, int first_char) {
 
 
 
+//SYMBOLS TABLE BEGIN
+//------------------------------
+
+struct _Symbol;
+typedef struct _Symbol Symbol;
+Symbol *crtStruct;
+Symbol *crtFunc;
+
+int crtDepth = 0;
+
+enum { TB_INT, TB_DOUBLE, TB_CHAR, TB_STRUCT, TB_VOID };
+enum { CLS_VAR, CLS_FUNC, CLS_EXTFUNC, CLS_STRUCT };
+enum { MEM_GLOBAL, MEM_ARG, MEM_LOCAL };
+
+typedef struct {
+	Symbol **begin;			// the beginning of the symbols, or NULL
+	Symbol **end;			// the position after the last symbol
+	Symbol **after;			// the position after the allocated space
+}Symbols;
+
+void initSymbols(Symbols *symbols)
+{
+	symbols->begin = NULL;
+	symbols->end = NULL;
+	symbols->after = NULL;
+}
+
+typedef struct Type {
+	int typeBase;			// TB_*
+	Symbol *s;				// struct definition for TB_STRUCT
+	int nElements;			// >0 array of given size, 0=array without size, <0 non array
+}Type;
+
+typedef struct _Symbol {
+	const char *name;		// a reference to the name stored in a token
+	int cls;				// CLS_*
+	int mem;				// MEM_*
+	Type type;
+	int depth;				// 0-global, 1-in function, 2... - nested blocks in function
+	union {
+		Symbols args;		// used only of functions
+		Symbols members;	// used only for structs
+	};
+}Symbol;
+Symbols symbols;
+
+Symbol *addSymbol(Symbols *symbols, const char *name, int cls)
+{
+	Symbol *s;
+	if (symbols->end == symbols->after) {				// create more room
+		int count = symbols->after - symbols->begin;
+		int n = count * 2;								// double the room
+		if (n == 0)n = 1;								// needed for the initial case
+		symbols->begin = (Symbol**)realloc(symbols->begin, n * sizeof(Symbol*));
+		if (symbols->begin == NULL)err("not enough memory");
+		symbols->end = symbols->begin + count;
+		symbols->after = symbols->begin + n;
+	}
+	SAFEALLOC(s, Symbol)
+		*symbols->end++ = s;
+	s->name = name;
+	s->cls = cls;
+	s->depth = crtDepth;
+	return s;
+}
+
+Symbol *findSymbol(Symbols *symbols, const char *name) {
+	Symbol **s;
+	for (s = (symbols->end)--; s != symbols->begin; s--)
+		if (strcmp((*s)->name, name) == 0)
+			return *s;
+	if (strcmp((*s)->name, name) == 0)
+		return *s;
+	return NULL;
+}
+
+void deleteSymbolsAfter(Symbols *symbols, Symbol *symbol) {
+	int crnt_position = 0, found_position;
+	Symbol **s;
+	for (s = symbols->begin; s != symbols->end; s++) {
+		if ((*s) == symbol) {
+			found_position = crnt_position;
+			for (Symbol** to_delete = ++s; to_delete != symbols->end; to_delete++)
+				free((*to_delete));
+			symbols->end = symbols->begin + found_position + 1;
+			break;
+		}
+		crnt_position++;
+	}
+}
+
+void addVar(Token *tk_name, Type *type)
+{
+	Symbol *s;
+	if (crtStruct) {
+		if (findSymbol(&crtStruct->members, tk_name->text))
+			tkerr("symbol redefinition: %s", tk_name->text);
+		s = addSymbol(&crtStruct->members, tk_name->text, CLS_VAR);
+	}
+	else if (crtFunc) {
+		s = findSymbol(&symbols, tk_name->text);
+		if (s&&s->depth == crtDepth)
+			tkerr("symbol redefinition: %s", tk_name->text);
+		s = addSymbol(&symbols, tk_name->text, CLS_VAR);
+		s->mem = MEM_LOCAL;
+	}
+	else {
+		if (findSymbol(&symbols, tk_name->text))
+			tkerr("symbol redefinition: %s", tk_name->text);
+		s = addSymbol(&symbols, tk_name->text, CLS_VAR);
+		s->mem = MEM_GLOBAL;
+	}
+	s->type = *type;
+}
+
+/*factor(out ret:double) ::= 
+	REAL:tk 
+	{
+		ret=tk->realVal;
+	} 
+	| LPAR expr:ret RPAR*/
+/*int factor(double *ret)
+{
+	if(consume(REAL)){
+		Token *tk=consumedTk;
+		*ret=tk->realVal;
+	}
+	else if(consume(LPAR)){
+	if(!expr(ret))tkerr(crtTk,"invalid expression after (");
+	if(!consume(RPAR))tkerr(crtTk,"missing )");
+}
+else return 0;
+return 1;
+}*/
+
+//------------------------------
+//SYMBOLS TABLE END
+
+
 
 
 //SYNTACTIC ANALYZER BEGIN
@@ -528,9 +667,9 @@ int consume_token(int code)
 }
 int decl_struct();
 int decl_var();
-int array_decl();
-int typebase();
-int type_name();
+int array_decl(Type *ret);
+int typebase(Type *ret);
+int type_name(Type *ret);
 int decl_func();
 int func_arg();
 int stm();
@@ -569,11 +708,20 @@ int unit() {
 }
 
 int func_arg() {
+	Type type;
 	Token *startTk = crntTk;
-	if (typebase()) {
+	if (typebase(&type)) {
+		Token *tk_name = crntTk;
 		if (consume_token(ID)) {
-			array_decl();
-			return 1;
+			if(!array_decl(&type))
+				type.nElements = -1;
+			Symbol  *s = addSymbol(&symbols, tk_name->text, CLS_VAR);
+			s->mem = MEM_ARG;
+			s->type = type;
+			s = addSymbol(&crtFunc->args, tk_name->text, CLS_VAR);
+			s->mem = MEM_ARG;
+			s->type = type;
+			return 1;		
 		}else
 			tkerr("Missing function argument ID");
 	}
@@ -581,9 +729,15 @@ int func_arg() {
 	return 0;
 }
 
-int function_body() {
+int function_body(Token *tk_name, Type type) {
 	Token *startTk = crntTk;
 	if (consume_token(LPAR)) {
+		if (findSymbol(&symbols, tk_name->text))
+			tkerr("symbol redefinition: %s", tk_name->text);
+		crtFunc = addSymbol(&symbols, tk_name->text, CLS_FUNC);
+		initSymbols(&crtFunc->args);
+		crtFunc->type = type;
+		crtDepth++;
 		if (func_arg()) {
 			while (1) {
 				if (consume_token(COMMA)) {
@@ -596,8 +750,12 @@ int function_body() {
 			}
 		}
 		if (consume_token(RPAR)) {
-			if (stm_compound())
+			crtDepth--;
+			if (stm_compound()) {
+				deleteSymbolsAfter(&symbols, crtFunc);
+				crtFunc = NULL;
 				return 1;
+			}
 			else tkerr("Missing compound statement in function body");
 		}else
 			tkerr("Missing ')' in function arguments");
@@ -608,13 +766,20 @@ int function_body() {
 
 int decl_func() {
 	Token *startTk = crntTk;
-	if (typebase())
-		consume_token(MUL);
-	else
-		if (!consume_token(VOID))
-			return 0;
+	Type type;
+
+	if (typebase(&type)) {
+		if (consume_token(MUL))
+			type.nElements = 0;
+		else
+			type.nElements = -1;
+	}else
+		if (consume_token(VOID))
+			type.typeBase = TB_VOID;
+
+	Token *tk_name = crntTk;
 	if (consume_token(ID)) {
-		if (function_body()){
+		if (function_body(tk_name,type)){
 			return 1;
 		}
 		tkerr("Error on declarig");
@@ -732,14 +897,20 @@ int stm() {
 
 int stm_compound() {
 	Token *startTk = crntTk;
+	Symbol *start = symbols.end[-1];
+
 	if (consume_token(LACC)) {
+		crtDepth++;
 		while (1) {
 			if (decl_var()) continue;
 			if (stm()) continue;
 			break;
 		}
-		if (consume_token(RACC))
+		if (consume_token(RACC)) {
+			crtDepth--;
+			deleteSymbolsAfter(&symbols, start);
 			return 1;
+		}
 		else tkerr("Missing '}' in compound statement");
 	}
 	crntTk = startTk;
@@ -959,8 +1130,9 @@ int expr_mul() {
 
 int expr_cast() {
 	Token *startTk = crntTk;
+	Type type;
 	if (consume_token(LPAR)) {
-		if (type_name()) {
+		if (type_name(&type)) {
 			if (consume_token(RPAR)) {
 				if (expr_cast()) 
 					return 1;
@@ -1084,23 +1256,32 @@ int expr_primary() {
 	return 0;
 }
 
-int typebase() {
+int typebase(Type *ret) {
 	Token *startTk = crntTk;
 	if (consume_token(INT)) {
 		//printf("Int type\n");
+		ret->typeBase = TB_INT;
 		return 1;
 	}
 	if (consume_token(DOUBLE)) {
 		//printf("Double type\n");
+		ret->typeBase = TB_DOUBLE;
 		return 1;
 	}
 	if (consume_token(CHAR)) {
 		//printf("Char type\n");
+		ret->typeBase = TB_CHAR;
 		return 1;
 	}
 	if (consume_token(STRUCT)) {
+		Token *tk_name = crntTk;
 		if (consume_token(ID)) {
 			//printf("Struct type\n");
+			Symbol *s = findSymbol(&symbols, tk_name->text);
+			if (s == NULL) tkerr("undefined symbol: %s", tk_name->text);
+			if (s->cls != CLS_STRUCT) tkerr("%s is not a struct", tk_name->text);
+			ret->typeBase = TB_STRUCT;
+			ret->s = s;
 			return 1;
 		}
 		else tkerr("Missing struct ID");
@@ -1112,12 +1293,20 @@ int typebase() {
 int decl_struct() {
 	Token *startTk = crntTk;
 	if (consume_token(STRUCT)) {
+		Token *tk_name = crntTk;
 		if (consume_token(ID)) {
 			if (consume_token(LACC)) {
+
+				if (findSymbol(&symbols, tk_name->text))
+					tkerr("symbol redefinition: %s", tk_name->text);
+				crtStruct = addSymbol(&symbols, tk_name->text, CLS_STRUCT);
+				initSymbols(&crtStruct->members);
+
 				while (1) {
 					if (decl_var())
 						continue;
 					break;
+
 				}
 				if (consume_token(RACC)) {
 					if (consume_token(SEMICOLON)) {
@@ -1134,18 +1323,27 @@ int decl_struct() {
 			tkerr("Missing structure ID at structure declaration");
 	}
 	crntTk = startTk;
+	crtStruct = NULL;
 	return 0;
 }
 
 int decl_var() {
 	Token *startTk = crntTk;
-	if (typebase()) {
+	Type type;
+
+	if (typebase(&type)) {
+		Token *tk_name = crntTk;
 		if (consume_token(ID)) {
-			array_decl();
+			if (!array_decl(&type))
+				type.nElements = -1;
+			addVar(tk_name, &type);
 			while (1) {
 				if (consume_token(COMMA)) {
+					Token *tk_name1 = crntTk;
 					if (consume_token(ID)) {
-						array_decl();
+						if(!array_decl(&type))
+							type.nElements = -1;
+						addVar(tk_name1, &type);
 						continue;
 					}else
 						tkerr("Missing ID after comma at variable declaration");
@@ -1165,10 +1363,20 @@ int decl_var() {
 	return 0;
 }
 
-int array_decl() {
+/*arrayDecl(out ret:Type):
+LBRACKET
+( expr
+{
+ret->nElements=0;       // for now do not compute the real size
+}
+)? RBRACKET ;
+*/
+
+int array_decl(Type *ret) {
 	Token *startTk = crntTk;
 	if (consume_token(LBRACKET)) {
 		expr();
+		ret->nElements = 0;
 		if (consume_token(RBRACKET)) {
 			//printf("Array declared\n");
 			return 1;
@@ -1179,9 +1387,10 @@ int array_decl() {
 	return 0;
 }
 
-int type_name() {
-	if (typebase()) {
-		array_decl();
+int type_name(Type *ret) {
+	if (typebase(ret)) {
+		if(!array_decl(ret))
+			ret->nElements = -1;
 		//printf("Type name\n");
 		return 1;
 	}
