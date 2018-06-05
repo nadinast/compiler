@@ -557,7 +557,7 @@ typedef struct _Symbol {
 		Symbols members;	// used only for structs
 	};
 }Symbol;
-Symbols symbols;
+Symbols symbols;
 
 Symbol *addSymbol(Symbols *symbols, const char *name, int cls)
 {
@@ -652,7 +652,8 @@ typedef union {
 	long int i;			// int, char
 	double d;			// double
 	const char *str;	// char[]
-}CtVal;
+}CtVal;
+
 typedef struct {
 	Type type;			// type of the result
 	int isLVal;			// if it is a LVal
@@ -717,22 +718,23 @@ Symbol *addExtFunc(const char *name, Type type)
 	s->type = type;
 	initSymbols(&s->args);
 	return s;
-}
+}
+
 Symbol *addFuncArg(Symbol *func, const char *name, Type type)
 {
 	Symbol *a = addSymbol(&func->args, name, CLS_VAR);
 	a->type = type;
 	return a;
-}
+}
+
 void addExtFuncs() {
 	Symbol *symbol, *args;
 
-	symbol = addExtFunc("put_s", createType(TB_VOID, -1));
-	args = addFuncArg(symbol, "s", createType(TB_CHAR, 0));	symbol = addExtFunc("get_s", createType(TB_VOID, -1));
+	symbol = addExtFunc("put_s", createType(TB_VOID, -1));	args = addFuncArg(symbol, "s", createType(TB_CHAR, 0));	symbol = addExtFunc("get_s", createType(TB_VOID, -1));
 	args = addFuncArg(symbol, "s", createType(TB_CHAR, 0));	symbol = addExtFunc("put_i", createType(TB_VOID, -1));
 	args = addFuncArg(symbol, "i", createType(TB_INT, -1));	symbol = addExtFunc("get_i", createType(TB_INT, -1));	symbol = addExtFunc("put_d", createType(TB_VOID, -1));
-	args = addFuncArg(symbol, "d", createType(TB_DOUBLE, -1));	symbol = addExtFunc("get_d", createType(TB_DOUBLE, -1));	symbol = addExtFunc("put_c", createType(TB_VOID, -1));
-	args = addFuncArg(symbol, "c", createType(TB_CHAR, -1));	symbol = addExtFunc("get_c", createType(TB_CHAR, -1));	symbol = addExtFunc("seconds", createType(TB_DOUBLE, -1));
+	args = addFuncArg(symbol, "d", createType(TB_DOUBLE, -1));	symbol = addExtFunc("get_d", createType(TB_DOUBLE, -1));	symbol = addExtFunc("put_c", createType(TB_VOID, -1));	args = addFuncArg(symbol, "c", createType(TB_CHAR, -1));	symbol = addExtFunc("get_c", createType(TB_CHAR, -1));	symbol = addExtFunc("seconds", createType(TB_DOUBLE, -1));
+
 }
 
 //------------------------------
@@ -753,7 +755,8 @@ int consume_token(int code)
 		return 1;
 	}
 	return 0;
-}
+}
+
 int decl_struct();
 int decl_var();
 int array_decl(Type *ret);
@@ -900,8 +903,9 @@ int rule_while(RetVal *rv){
 	}
 	crntTk = startTk;
 	return 0;
-}int rule_break() {	Token *startTk = crntTk;	if (consume_token(BREAK)) {		if (consume_token(SEMICOLON))			return 1;		else tkerr("Missing semicolon after break");	}	crntTk = startTk;
-	return 0;}
+}int rule_break() {	Token *startTk = crntTk;	if (consume_token(BREAK)) {		if (consume_token(SEMICOLON))			return 1;		else tkerr("Missing semicolon after break");	}
+	crntTk = startTk;	return 0;}
+
 int rule_if(RetVal *rv) {
 	Token *startTk = crntTk;
 	if (consume_token(IF)) {
