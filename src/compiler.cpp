@@ -4,6 +4,7 @@
 #include<stdarg.h>
 #include<ctype.h>
 #include<string.h>
+#include"compiler.h"
 
 #pragma warning(disable : 4996)
 #define SAFEALLOC(var,Type) if((var=(Type*)malloc(sizeof(Type)))==NULL)err("not enough memory");
@@ -17,35 +18,12 @@ char *stackAfter;	// first byte after stack; used for stack limit tests
 char globals[GLOBAL_SIZE];
 int nGlobals;
 
-
-//Syntax analyzer main funtion definition
-int unit();
-
 //global vars for code generation part
 int sizeArgs;
 int offset;
 
 //LEXICAL ANALYZER BEGIN
 //------------------------------
-
-//token codes
-enum token_codes{
-	ID, BREAK, CHAR, DOUBLE, ELSE, FOR, IF, INT, RETURN, STRUCT, VOID, WHILE,
-	END, CT_INT, CT_REAL, CT_CHAR, CT_STRING, ASSIGN, ADD, SUB,
-	MUL, DIV, DOT, AND, OR, NOT, EQUAL, NOTEQ, LESS, LESSEQ, GREATER,
-	GREATEREQ, SEMICOLON, COMMA, LPAR, RPAR, LBRACKET, RBRACKET, LACC, RACC
-};
-
-typedef struct _Token {
-	int code;       // code (name)
-	union {
-		char *text;  // used for ID, CT_STRING (dynamically allocated)
-		long int real_integer;  // used for CT_INT
-		char character; //used for CT_CHAR
-		double real_double;    // used for CT_REAL
-	};
-	struct _Token *next; // link to the next token
-}Token;
 
 Token *tokens;
 Token *lastToken;
@@ -176,11 +154,11 @@ void consume_comments(FILE* fp, int first_char) {
 						exit(0);
 					}
 				}
-			else
-				if (c == '*')
-					consume_multi_line_comments(fp);
 				else
-					ungetc(c, fp);
+					if (c == '*')
+						consume_multi_line_comments(fp);
+					else
+						ungetc(c, fp);
 		}
 		else
 			ungetc(c, fp);
@@ -231,7 +209,7 @@ int getNextToken(FILE * fp, int first_char) {
 			}
 			else if (ch == '/') {
 				ch = fgetc(fp);
-				if (ch != '*' && ch != '/'){
+				if (ch != '*' && ch != '/') {
 					addTk(DIV, NULL);
 					return DIV;
 				}
@@ -525,24 +503,13 @@ int getNextToken(FILE * fp, int first_char) {
 
 
 //SYMBOLS TABLE BEGIN
-//------------------------------
+//-------------------------------
 
-struct _Symbol;
-typedef struct _Symbol Symbol;
+Symbols symbols;
 Symbol *crtStruct;
 Symbol *crtFunc;
 
 int crtDepth = 0;
-
-enum { TB_INT, TB_DOUBLE, TB_CHAR, TB_STRUCT, TB_VOID };
-enum { CLS_VAR, CLS_FUNC, CLS_EXTFUNC, CLS_STRUCT };
-enum { MEM_GLOBAL, MEM_ARG, MEM_LOCAL };
-
-typedef struct {
-	Symbol **begin;			// the beginning of the symbols, or NULL
-	Symbol **end;			// the position after the last symbol
-	Symbol **after;			// the position after the allocated space
-}Symbols;
 
 void initSymbols(Symbols *symbols)
 {
@@ -550,29 +517,6 @@ void initSymbols(Symbols *symbols)
 	symbols->end = NULL;
 	symbols->after = NULL;
 }
-
-typedef struct Type {
-	int typeBase;			// TB_*
-	Symbol *s;				// struct definition for TB_STRUCT
-	int nElements;			// >0 array of given size, 0=array without size, <0 non array
-}Type;
-
-typedef struct _Symbol {
-	const char *name;		// a reference to the name stored in a token
-	int cls;				// CLS_*
-	int mem;				// MEM_*
-	Type type;
-	int depth;				// 0-global, 1-in function, 2... - nested blocks in function
-	union {
-		Symbols args;		// used only of functions
-		Symbols members;	// used only for structs
-	};
-	union {
-		void *addr;			// vm: the memory address for global symbols
-		int offset;			// vm: the stack offset for local symbols
-	};
-}Symbol;
-Symbols symbols;
 
 Symbol *addSymbol(Symbols *symbols, const char *name, int cls)
 {
@@ -617,6 +561,7 @@ Symbol *requireSymbol(Symbols *symbols, const char *name) {
 			return *s;
 	}
 	tkerr("The symbol required was not found\n");
+	return NULL;
 }
 
 void deleteSymbolsAfter(Symbols *symbols, Symbol *symbol) {
@@ -634,8 +579,7 @@ void deleteSymbolsAfter(Symbols *symbols, Symbol *symbol) {
 	}
 }
 
-void addVar(Token *tk_name, Type *type)
-{
+void addVar(Token *tk_name, Type *type) {
 	printf("Token name: %s, type: %d\n", tk_name->text, type->typeBase);
 	Symbol *s;
 	if (crtStruct) {
@@ -673,16 +617,6 @@ void addVar(Token *tk_name, Type *type)
 //TYPE ANALYSIS BEGIN
 //------------------------------
 
-void put_s();
-void get_s();
-void put_c();
-void get_c();
-void put_d();
-void get_d();
-void put_i();
-void get_i();
-void seconds();
-
 Type createType(int typeBase, int nElements)
 {
 	Type t;
@@ -691,66 +625,49 @@ Type createType(int typeBase, int nElements)
 	return t;
 }
 
-typedef union {
-	long int i;			// int, char
-	double d;			// double
-	const char *str;	// char[]
-}CtVal;
-
-typedef struct {
-	Type type;			// type of the result
-	int isLVal;			// if it is a LVal
-	int isCtVal;		// if it is a constant value (int, real, char, char[])
-	CtVal ctVal;		// the constat value
-}RetVal;
-
 Type getArithType(Type *s1, Type *s2) {
 	switch (s1->typeBase) {
-		case TB_DOUBLE: return *s1;
-		case TB_CHAR: return *s2;
-		case TB_INT :
-			switch (s2->typeBase) {
-				case TB_DOUBLE: return *s2;
-				case TB_INT:
-				case TB_CHAR:
-					return *s1;
-			}
+	case TB_DOUBLE: return *s1;
+	case TB_CHAR: return *s2;
+	case TB_INT:
+		switch (s2->typeBase) {
+		case TB_DOUBLE: return *s2;
+		case TB_INT:
+		case TB_CHAR:
+			return *s1;
+		}
 	}
 	return *s1;
 }
 
-void cast(Type *dst, Type *src)
-{
-	if (src->nElements>-1) {
-		if (dst->nElements>-1) {
+void cast(Type *dst, Type *src) {
+	if (src->nElements > -1) {
+		if (dst->nElements > -1) {
 			if (src->typeBase != dst->typeBase)
 				tkerr("an array cannot be converted to an array of another type");
 		}
-		else {
+		else
 			tkerr("an array cannot be converted to a non-array");
-		}
 	}
-	else {
-		if (dst->nElements>-1) {
+	else
+		if (dst->nElements > -1)
 			tkerr("a non-array cannot be converted to an array");
-		}
-	}
 	switch (src->typeBase) {
-	case TB_CHAR:
-	case TB_INT:
-	case TB_DOUBLE:
-		switch (dst->typeBase) {
 		case TB_CHAR:
 		case TB_INT:
 		case TB_DOUBLE:
-			return;
-		}
-	case TB_STRUCT:
-		if (dst->typeBase == TB_STRUCT) {
-			if (src->s != dst->s)
-				tkerr("a structure cannot be converted to another one");
-			return;
-		}
+			switch (dst->typeBase) {
+			case TB_CHAR:
+			case TB_INT:
+			case TB_DOUBLE:
+				return;
+			}
+		case TB_STRUCT:
+			if (dst->typeBase == TB_STRUCT) {
+				if (src->s != dst->s)
+					tkerr("a structure cannot be converted to another one");
+				return;
+			}
 	}
 	tkerr("incompatible types");
 }
@@ -786,15 +703,15 @@ void addExtFuncs() {
 	symbol = addExtFunc("get_i", createType(TB_INT, -1), get_i);
 
 	symbol = addExtFunc("put_d", createType(TB_VOID, -1), put_d);
-	args = addFuncArg(symbol, "d", createType(TB_DOUBLE, -1));
+	args = addFuncArg(symbol, "d", createType(TB_DOUBLE, -1));
 
 	symbol = addExtFunc("get_d", createType(TB_DOUBLE, -1), get_d);
 
 	symbol = addExtFunc("put_c", createType(TB_VOID, -1), put_c);
-	args = addFuncArg(symbol, "c", createType(TB_CHAR, -1));
+	args = addFuncArg(symbol, "c", createType(TB_CHAR, -1));
 
 	symbol = addExtFunc("get_c", createType(TB_CHAR, -1), get_c);
-
+	
 	symbol = addExtFunc("seconds", createType(TB_DOUBLE, -1), seconds);
 }
 
@@ -805,67 +722,17 @@ void addExtFuncs() {
 
 //CODE GENERATION BEGIN
 //------------------------------
-
-//_C - character
-//_D - double
-//_I - integer
-//_A - address
-enum {
-	O_ADD_C, O_ADD_D, O_ADD_I, O_AND_A,
-	O_AND_C, O_AND_D, O_AND_I,
-	O_CALL, O_CALLEXT,
-	O_CAST_I_C, O_CAST_I_D,
-	O_CAST_C_D, O_CAST_C_I,
-	O_CAST_D_C, O_CAST_D_I,
-	O_DIV_C, O_DIV_D, O_DIV_I,
-	O_DROP, O_ENTER,
-	O_EQ_C, O_EQ_D, O_EQ_I, O_EQ_A,
-	O_GREATER_C, O_GREATER_D, O_GREATER_I,
-	O_GREATEREQ_C, O_GREATEREQ_D, O_GREATEREQ_I,
-	O_HALT, O_INSERT,
-	O_JF_C, O_JF_D, O_JF_I, O_JF_A,
-	O_JMP,
-	O_JT_C, O_JT_D, O_JT_I, O_JT_A,
-	O_LESS_C, O_LESS_D, O_LESS_I,
-	O_LESSEQ_C, O_LESSEQ_D, O_LESSEQ_I,
-	O_LOAD,
-	O_MUL_C, O_MUL_D, O_MUL_I,
-	O_NEG_C, O_NEG_D, O_NEG_I,
-	O_NOP,
-	O_NOT_C, O_NOT_D, O_NOT_I, O_NOT_A,
-	O_NOTEQ_C, O_NOTEQ_D, O_NOTEQ_I, O_NOTEQ_A,
-	O_OFFSET,
-	O_OR_C, O_OR_D, O_OR_I, O_OR_A,
-	O_PUSHFPADDR,
-	O_PUSHCT_C, O_PUSHCT_D, O_PUSHCT_I, O_PUSHCT_A,
-	O_RET, O_STORE,
-	O_SUB_C, O_SUB_D, O_SUB_I
-};
-
-typedef struct _Instr {
-	int opcode;					// O_*
-	union {
-		long int i;				// int, char
-		double d;
-		void *addr;
-	}args[2];
-	struct _Instr *last, *next;	// links to last, next instructions
-}Instr;
-
-Instr *instructions, *lastInstruction; // double linked list
-Instr *crtLoopEnd;   //for the FOR, WHILE loop instruction
-
-int typeArgSize(Type *type);
-Instr *addInstrI(int opcode, long int val);
-int typeBaseSize(Type *type);
+Instr *instructions, *lastInstruction;	// double linked list
+Instr *crtLoopEnd;						//for the FOR, WHILE loop instruction
 
 void *allocGlobal(int size) {
 	void *p = globals + nGlobals;
-	if (nGlobals + size>GLOBAL_SIZE)
+	if (nGlobals + size > GLOBAL_SIZE)
 		err("insufficient globals space");
 	nGlobals += size;
 	return p;
 }
+
 Instr *getRVal(RetVal *rv)
 {
 	if (rv->isLVal) {
@@ -883,21 +750,21 @@ Instr *getRVal(RetVal *rv)
 	return lastInstruction;
 }
 
-
-Instr *createInstr(int opcode){
+Instr *createInstr(int opcode) {
 	Instr *i;
 	SAFEALLOC(i, Instr)
-	i->opcode = opcode;
+		i->opcode = opcode;
 	return i;
 }
-void insertInstrAfter(Instr *after, Instr *i){
+
+void insertInstrAfter(Instr *after, Instr *i) {
 	i->next = after->next;
 	i->last = after;
 	after->next = i;
 	if (i->next == NULL)lastInstruction = i;
 }
 
-Instr *addInstr(int opcode){
+Instr *addInstr(int opcode) {
 	Instr *i = createInstr(opcode);
 	i->next = NULL;
 	i->last = lastInstruction;
@@ -917,6 +784,7 @@ Instr *appendInstr(Instr *i) {
 	else
 		instructions = i;
 	lastInstruction = i;
+	return lastInstruction;
 }
 
 Instr *addInstrAfter(Instr *after, int opcode)
@@ -925,6 +793,7 @@ Instr *addInstrAfter(Instr *after, int opcode)
 	insertInstrAfter(after, i);
 	return i;
 }
+
 Instr *addInstrA(int opcode, void *addr) {
 	Instr *instr = addInstr(opcode);
 	instr->args[0].addr = addr;
@@ -996,7 +865,7 @@ void deleteInstructionsAfter(Instr *start) {
 }
 
 void pushd(double d) {
-	if (SP + sizeof(double)>stackAfter)
+	if (SP + sizeof(double) > stackAfter)
 		err("out of stack");
 	*(double*)SP = d;
 	SP += sizeof(double);
@@ -1004,13 +873,13 @@ void pushd(double d) {
 
 double popd() {
 	SP -= sizeof(double);
-	if (SP<stack)
+	if (SP < stack)
 		err("not enough stack bytes for popd");
 	return *(double*)SP;
 }
 
 void pushi(long int i) {
-	if (SP + sizeof(long int)>stackAfter)
+	if (SP + sizeof(long int) > stackAfter)
 		err("out of stack");
 	*(long int*)SP = i;
 	SP += sizeof(long int);
@@ -1018,13 +887,13 @@ void pushi(long int i) {
 
 long int popi() {
 	SP -= sizeof(long int);
-	if (SP<stack)
+	if (SP < stack)
 		err("not enough stack bytes for popd");
 	return *(long int*)SP;
 }
 
-void pusha(void *a){
-	if (SP + sizeof(void*)>stackAfter)
+void pusha(void *a) {
+	if (SP + sizeof(void*) > stackAfter)
 		err("out of stack");
 	*(void**)SP = a;
 	SP += sizeof(void*);
@@ -1033,12 +902,13 @@ void pusha(void *a){
 void *popa()
 {
 	SP -= sizeof(void*);
-	if (SP<stack)
+	if (SP < stack)
 		err("not enough stack bytes for popa");
 	return *(void**)SP;
 }
+
 void pushc(char c) {
-	if (SP + sizeof(char)>stackAfter)
+	if (SP + sizeof(char) > stackAfter)
 		err("out of stack");
 	*(char*)SP = c;
 	SP += sizeof(char);
@@ -1046,13 +916,13 @@ void pushc(char c) {
 
 char popc() {
 	SP -= sizeof(char);
-	if (SP<stack)
+	if (SP < stack)
 		err("not enough stack bytes for popd");
 	return *(char*)SP;
 }
 
 int typeFullSize(Type *type) {
-	return typeBaseSize(type)*(type->nElements>0 ? type->nElements : 1);
+	return typeBaseSize(type)*(type->nElements > 0 ? type->nElements : 1);
 }
 
 int typeArgSize(Type *type) {
@@ -1065,19 +935,20 @@ int typeBaseSize(Type *type)
 	int size = 0;
 	Symbol **is;
 	switch (type->typeBase) {
-		case TB_INT:size = sizeof(long int); break;
-		case TB_DOUBLE:size = sizeof(double); break;
-		case TB_CHAR:size = sizeof(char); break;
-		case TB_STRUCT:
-			for (is = type->s->members.begin; is != type->s->members.end; is++) {
-				size += typeFullSize(&(*is)->type);
-			}
-			break;
-		case TB_VOID:size = 0; break;
-		default:err("invalid typeBase: %d", type->typeBase);
+	case TB_INT:size = sizeof(long int); break;
+	case TB_DOUBLE:size = sizeof(double); break;
+	case TB_CHAR:size = sizeof(char); break;
+	case TB_STRUCT:
+		for (is = type->s->members.begin; is != type->s->members.end; is++) {
+			size += typeFullSize(&(*is)->type);
 		}
+		break;
+	case TB_VOID:size = 0; break;
+	default:err("invalid typeBase: %d", type->typeBase);
+	}
 	return size;
 }
+
 void put_s() {
 	char *s = (char *)popa();
 	printf("#%s\n", s);
@@ -1103,7 +974,7 @@ void put_d() {
 }
 
 void get_d() {
-	float d;
+	double d;
 	scanf("%lf", &d);
 	pushd(d);
 }
@@ -1259,7 +1130,7 @@ void run(Instr *IP) {
 		case O_DROP:
 			iVal1 = IP->args[0].i;
 			printf("DROP\t%ld\n", iVal1);
-			if (SP - iVal1<stack)err("not enough stack bytes");
+			if (SP - iVal1 < stack)err("not enough stack bytes");
 			SP -= iVal1;
 			IP = IP->next;
 			break;
@@ -1302,22 +1173,22 @@ void run(Instr *IP) {
 		case O_GREATER_C:
 			cVal1 = popc();
 			cVal2 = popc();
-			printf("O_GREATER_C\t(%c>%c -> %ld)\n", cVal2, cVal1, (long int)(cVal2>cVal1));
-			pushi(cVal2>cVal1);
+			printf("O_GREATER_C\t(%c>%c -> %ld)\n", cVal2, cVal1, (long int)(cVal2 > cVal1));
+			pushi(cVal2 > cVal1);
 			IP = IP->next;
 			break;
 		case O_GREATER_D:
 			dVal1 = popd();
 			dVal2 = popd();
-			printf("O_GREATER_D\t(%lf>%lf -> %ld)\n", dVal2, dVal1, (long int)(dVal2>dVal1));
-			pushi(dVal2>dVal1);
+			printf("O_GREATER_D\t(%lf>%lf -> %ld)\n", dVal2, dVal1, (long int)(dVal2 > dVal1));
+			pushi(dVal2 > dVal1);
 			IP = IP->next;
 			break;
 		case O_GREATER_I:
 			iVal1 = popi();
 			iVal2 = popi();
-			printf("O_GREATER_I\t(%ld>%ld -> %ld)\n", iVal2, iVal1, (long int)(iVal2>iVal1));
-			pushi(iVal2>iVal1);
+			printf("O_GREATER_I\t(%ld>%ld -> %ld)\n", iVal2, iVal1, (long int)(iVal2 > iVal1));
+			pushi(iVal2 > iVal1);
 			IP = IP->next;
 			break;
 		case O_GREATEREQ_C:
@@ -1348,7 +1219,7 @@ void run(Instr *IP) {
 			iVal1 = IP->args[0].i;	// iDst
 			iVal2 = IP->args[1].i;	// nBytes
 			printf("INSERT\t%ld,%ld\n", iVal1, iVal2);
-			if (SP + iVal2>stackAfter)err("out of stack");
+			if (SP + iVal2 > stackAfter)err("out of stack");
 			memmove(SP - iVal1 + iVal2, SP - iVal1, iVal1); //make room
 			memmove(SP - iVal1, SP + iVal2, iVal2);         //dup
 			SP += iVal2;
@@ -1357,66 +1228,66 @@ void run(Instr *IP) {
 		case O_JF_C:
 			cVal1 = popc();
 			printf("O_JF_C\t%p\t(%c)\n", IP->args[0].addr, cVal1);
-			IP = (Instr *) ((cVal1 == 0) ? IP->args[0].addr : IP->next);
+			IP = (Instr *)((cVal1 == 0) ? IP->args[0].addr : IP->next);
 			break;
 		case O_JF_D:
 			dVal1 = popd();
 			printf("O_JF_D\t%p\t(%lf)\n", IP->args[0].addr, dVal1);
-			IP = (Instr *) ((dVal1 == 0.0) ? IP->args[0].addr : IP->next);
+			IP = (Instr *)((dVal1 == 0.0) ? IP->args[0].addr : IP->next);
 			break;
 		case O_JF_I:
 			iVal1 = popi();
 			printf("JF\t%p\t(%ld)\n", IP->args[0].addr, iVal1);
-			IP = (Instr *) ((iVal1 == 0) ? IP->args[0].addr : IP->next);
+			IP = (Instr *)((iVal1 == 0) ? IP->args[0].addr : IP->next);
 			break;
 		case O_JF_A:
 			aVal1 = (char *)popa();
 			printf("O_JF_A\t%p\t(%p)\n", IP->args[0].addr, aVal1);
-			IP = (Instr *) ((aVal1 == 0) ? IP->args[0].addr : IP->next);
+			IP = (Instr *)((aVal1 == 0) ? IP->args[0].addr : IP->next);
 			break;
 		case O_JMP:
 			printf("O_JMP\t%p\n", IP->args[0].addr);
-			IP = (Instr *) IP->args[0].addr;
+			IP = (Instr *)IP->args[0].addr;
 			break;
 		case O_JT_C:
 			cVal1 = popc();
 			printf("O_JT_C\t%p\t(%c)\n", IP->args[0].addr, cVal1);
-			IP = (Instr *) (cVal1 ? IP->args[0].addr : IP->next);
+			IP = (Instr *)(cVal1 ? IP->args[0].addr : IP->next);
 			break;
 		case O_JT_D:
 			dVal1 = popd();
 			printf("O_JT_D\t%p\t(%lf)\n", IP->args[0].addr, dVal1);
-			IP = (Instr *) (dVal1 ? IP->args[0].addr : IP->next);
+			IP = (Instr *)(dVal1 ? IP->args[0].addr : IP->next);
 			break;
 		case O_JT_I:
 			iVal1 = popi();
 			printf("O_JT_I\t%p\t(%ld)\n", IP->args[0].addr, iVal1);
-			IP = (Instr *) (iVal1 ? IP->args[0].addr : IP->next);
+			IP = (Instr *)(iVal1 ? IP->args[0].addr : IP->next);
 			break;
 		case O_JT_A:
 			aVal1 = (char *)popa();
 			printf("O_JT_A\t%p\t(%p)\n", IP->args[0].addr, aVal1);
-			IP = (Instr *) (aVal1 ? IP->args[0].addr : IP->next);
+			IP = (Instr *)(aVal1 ? IP->args[0].addr : IP->next);
 			break;
 		case O_LESS_C:
 			cVal1 = popc();
 			cVal2 = popc();
-			printf("O_LESS_C\t(%c < %c -> %ld)\n", cVal2, cVal1, (long int)(cVal2<cVal1));
-			pushi(cVal2<cVal1);
+			printf("O_LESS_C\t(%c < %c -> %ld)\n", cVal2, cVal1, (long int)(cVal2 < cVal1));
+			pushi(cVal2 < cVal1);
 			IP = IP->next;
 			break;
 		case O_LESS_D:
 			dVal1 = popd();
 			dVal2 = popd();
-			printf("O_LESS_D\t(%lf < %lf -> %ld)\n", dVal2, dVal1, (long int)(dVal2<dVal1));
-			pushi(dVal2<dVal1);
+			printf("O_LESS_D\t(%lf < %lf -> %ld)\n", dVal2, dVal1, (long int)(dVal2 < dVal1));
+			pushi(dVal2 < dVal1);
 			IP = IP->next;
 			break;
 		case O_LESS_I:
 			iVal1 = popi();
 			iVal2 = popi();
-			printf("O_LESS_I\t(%ld < %ld -> %ld)\n", iVal2, iVal1, (long int)(iVal2<iVal1));
-			pushi(iVal2<iVal1);
+			printf("O_LESS_I\t(%ld < %ld -> %ld)\n", iVal2, iVal1, (long int)(iVal2 < iVal1));
+			pushi(iVal2 < iVal1);
 			IP = IP->next;
 			break;
 		case O_LESSEQ_C:
@@ -1442,9 +1313,9 @@ void run(Instr *IP) {
 			break;
 		case O_LOAD:
 			iVal1 = IP->args[0].i;
-			aVal1 = (char *) popa();
+			aVal1 = (char *)popa();
 			printf("LOAD\t%ld\t(%p)\n", iVal1, aVal1);
-			if (SP + iVal1>stackAfter)err("out of stack");
+			if (SP + iVal1 > stackAfter)err("out of stack");
 			memcpy(SP, aVal1, iVal1);
 			SP += iVal1;
 			IP = IP->next;
@@ -1545,7 +1416,7 @@ void run(Instr *IP) {
 			break;
 		case O_OFFSET:
 			iVal1 = popi();
-			aVal1 = (char *) popa();
+			aVal1 = (char *)popa();
 			printf("OFFSET\t(%p + %ld -> %p)\n", aVal1, iVal1, aVal1 + iVal1);
 			pusha(aVal1 + iVal1);
 			IP = IP->next;
@@ -1614,18 +1485,18 @@ void run(Instr *IP) {
 			printf("RET\t%ld,%ld\n", iVal1, iVal2);
 			oldSP = SP;
 			SP = FP;
-			FP = (char *) popa();
-			IP = (Instr *) popa();
-			if (SP - iVal1<stack)err("not enough stack bytes");
+			FP = (char *)popa();
+			IP = (Instr *)popa();
+			if (SP - iVal1 < stack)err("not enough stack bytes");
 			SP -= iVal1;
 			memmove(SP, oldSP - iVal2, iVal2);
 			SP += iVal2;
 			break;
 		case O_STORE:
 			iVal1 = IP->args[0].i;
-			if (SP - (sizeof(void*) + iVal1)<stack)
+			if (SP - (sizeof(void*) + iVal1) < stack)
 				err("not enough stack bytes for SET");
-			aVal1 = (char *) (*(void**)(SP - ((sizeof(void*) + iVal1))));
+			aVal1 = (char *)(*(void**)(SP - ((sizeof(void*) + iVal1))));
 			printf("STORE\t%ld\t(%p)\n", iVal1, aVal1);
 			memcpy(aVal1, SP - iVal1, iVal1);
 			SP -= sizeof(void*) + iVal1;
@@ -1669,8 +1540,7 @@ void run(Instr *IP) {
 Token *consumedTk;
 Token *crntTk;
 
-int consume_token(int code)
-{
+int consume_token(int code) {
 	if (crntTk->code == code) {
 		consumedTk = crntTk;
 		crntTk = crntTk->next;
@@ -1678,34 +1548,6 @@ int consume_token(int code)
 	}
 	return 0;
 }
-
-int decl_struct();
-int decl_var();
-int array_decl(Type *ret);
-int typebase(Type *ret);
-int type_name(Type *ret);
-int decl_func();
-int func_arg();
-int stm();
-int stm_compound();
-int expr(RetVal *rv);
-int expr_assign(RetVal *rv);
-int expr_or(RetVal *rv);
-int expr_and(RetVal *rv);
-int expr_eq(RetVal *rv);
-int expr_rel(RetVal *rv);
-int expr_add(RetVal *rv);
-int expr_mul(RetVal *rv);
-int expr_cast(RetVal *rv);
-int expr_unary(RetVal *rv);
-int expr_postfix(RetVal *rv);
-int expr_primary(RetVal *rv);
-int rule_if(RetVal *rv, Instr  *i1, Instr *i2);
-int rule_while(RetVal *rv, Instr *i1, Instr *i2);
-int rule_for(Instr *i2, Instr* i3, Instr* i4, Instr *is, Instr *ib3, Instr *ibs);
-int rule_break();
-int rule_return(RetVal *rv, Instr* i);
-
 
 int unit() {
 	initSymbols(&symbols);
@@ -1741,7 +1583,7 @@ int func_arg() {
 	if (typebase(&type)) {
 		Token *tk_name = crntTk;
 		if (consume_token(ID)) {
-			if(!array_decl(&type))
+			if (!array_decl(&type))
 				type.nElements = -1;
 			Symbol  *s = addSymbol(&symbols, tk_name->text, CLS_VAR);
 			s->mem = MEM_ARG;
@@ -1761,7 +1603,8 @@ int func_arg() {
 			offset += typeArgSize(&s->type);
 
 			return 1;
-		}else
+		}
+		else
 			tkerr("Missing function argument ID");
 	}
 	crntTk = startTk;
@@ -1769,6 +1612,7 @@ int func_arg() {
 }
 
 int function_body(Token *tk_name, Type type) {
+
 	Token *startTk = crntTk;
 	Symbol **ps;
 
@@ -1787,7 +1631,7 @@ int function_body(Token *tk_name, Type type) {
 					else
 						tkerr("Missing function argument after comma");
 				}
-			    break;
+				break;
 			}
 		}
 		if (consume_token(RPAR)) {
@@ -1820,7 +1664,8 @@ int function_body(Token *tk_name, Type type) {
 				return 1;
 			}
 			else tkerr("Missing compound statement in function body");
-		}else
+		}
+		else
 			tkerr("Missing ')' in function arguments");
 	}
 	crntTk = startTk;
@@ -1836,14 +1681,15 @@ int decl_func() {
 			type.nElements = 0;
 		else
 			type.nElements = -1;
-	}else
+	}
+	else
 		if (consume_token(VOID))
 			type.typeBase = TB_VOID;
 
 	Token *tk_name = crntTk;
 	if (consume_token(ID)) {
 		sizeArgs = offset = 0;
-		if (function_body(tk_name,type)){
+		if (function_body(tk_name, type)) {
 			return 1;
 		}
 		tkerr("Error on declarig");
@@ -1852,7 +1698,7 @@ int decl_func() {
 	return 0;
 }
 
-int rule_while(RetVal *rv, Instr *i1, Instr *i2){
+int rule_while(RetVal *rv, Instr *i1, Instr *i2) {
 	Token *startTk = crntTk;
 	if (consume_token(WHILE)) {
 
@@ -1870,6 +1716,7 @@ int rule_while(RetVal *rv, Instr *i1, Instr *i2){
 
 					//Code generation
 					i2 = createCondJmp(rv);
+
 
 					if (stm()) {
 
@@ -1892,22 +1739,19 @@ int rule_while(RetVal *rv, Instr *i1, Instr *i2){
 	}
 	crntTk = startTk;
 	return 0;
-}
-
-int rule_break() {
+}int rule_break() {
 	Token *startTk = crntTk;
 	if (consume_token(BREAK)) {
-		if (consume_token(SEMICOLON)) {
-			//Code generation begin
-			if (!crtLoopEnd)
-				tkerr("break without for or while");
-			addInstrA(O_JMP, crtLoopEnd);
-				//Code generation end
-			return 1;
-		}
-		else tkerr("Missing semicolon after break");	}
-	crntTk = startTk;
-	return 0;
+	if (consume_token(SEMICOLON)) {
+		//Code generation begin
+		if (!crtLoopEnd)
+			tkerr("break without for or while");
+		addInstrA(O_JMP, crtLoopEnd);
+		//Code generation end
+		return 1;
+	}
+	else tkerr("Missing semicolon after break");	}
+	crntTk = startTk;	return 0;
 }
 
 int rule_if(RetVal *rv, Instr  *i1, Instr *i2) {
@@ -1971,7 +1815,7 @@ int rule_for(Instr *i2, Instr* i3, Instr* i4, Instr *is, Instr *ib3, Instr *ibs)
 			expr(&rv1);
 
 			//Code generation begin
-			if(typeArgSize(&rv1.type))
+			if (typeArgSize(&rv1.type))
 				addInstrI(O_DROP, typeArgSize(&rv1.type));
 			//Code generation end
 
@@ -2029,23 +1873,27 @@ int rule_for(Instr *i2, Instr* i3, Instr* i4, Instr *is, Instr *ib3, Instr *ibs)
 						}
 						else
 							tkerr("Missing for statement");
-					}else
+					}
+					else
 						tkerr("Missing ')' in for statement");
-				}else
+				}
+				else
 					tkerr("Missing ';' in for statement");
-			}else
+			}
+			else
 				tkerr("Missing ';' for statement");
-		}else
+		}
+		else
 			tkerr("Missing '(' for statement");
 	}
 	crntTk = startTk;
 	return 0;
 }
 
-int rule_return(RetVal *rv, Instr *i){
+int rule_return(RetVal *rv, Instr *i) {
 	Token *startTk = crntTk;
 	if (consume_token(RETURN)) {
-		if(expr(rv)){
+		if (expr(rv)) {
 
 			//Code generation begin
 			i = getRVal(rv);
@@ -2077,19 +1925,19 @@ int rule_return(RetVal *rv, Instr *i){
 int stm() {
 	RetVal rv;
 	//Code generation
-	Instr *i, *i1, *i2, *i3, *i4, *is, *ib3, *ibs;
+	Instr i, i1, i2, i3, i4, is, ib3, ibs;
 
 	if (stm_compound())
 		return 1;
-	if (rule_if(&rv, i1, i2))
+	if (rule_if(&rv, &i1, &i2))
 		return 1;
-	if (rule_while(&rv, i1, i2))
+	if (rule_while(&rv, &i1, &i2))
 		return 1;
-	if (rule_for(i2, i3, i4, is, ib3, ibs))
+	if (rule_for(&i2, &i3, &i4, &is, &ib3, &ibs))
 		return 1;
 	if (rule_break())
 		return 1;
-	if (rule_return(&rv, i))
+	if (rule_return(&rv, &i))
 		return 1;
 	expr(&rv);
 
@@ -2126,7 +1974,7 @@ int stm_compound() {
 }
 
 int expr(RetVal *rv) {
-	if(expr_assign(rv)) return 1;
+	if (expr_assign(rv)) return 1;
 	return 0;
 }
 
@@ -2143,7 +1991,7 @@ int expr_assign(RetVal *rv) {
 				if (expr_assign(&rve)) {
 					if (!rv->isLVal)
 						tkerr("cannot assign to a non-lval");
-					if (rv->type.nElements>-1 || rve.type.nElements>-1)
+					if (rv->type.nElements > -1 || rve.type.nElements > -1)
 						tkerr("the arrays cannot be assigned");
 					cast(&(rv->type), &(rve.type));
 
@@ -2160,8 +2008,9 @@ int expr_assign(RetVal *rv) {
 					rv->isCtVal = rv->isLVal = 0;
 				}
 				tkerr("Missing assign expression");
-			}else
-			   tkerr("Missing '=' in assign expression");
+			}
+			else
+				tkerr("Missing '=' in assign expression");
 		}
 		return 0;
 	}
@@ -2170,7 +2019,7 @@ int expr_assign(RetVal *rv) {
 			if (expr_assign(&rve)) {
 				if (!rv->isLVal)
 					tkerr("cannot assign to a non-lval");
-				if (rv->type.nElements>-1 || rve.type.nElements>-1)
+				if (rv->type.nElements > -1 || rve.type.nElements > -1)
 					tkerr("the arrays cannot be assigned");
 				cast(&(rv->type), &(rve.type));
 				rv->isCtVal = rv->isLVal = 0;
@@ -2205,12 +2054,12 @@ int expr_or1(RetVal *rv) {
 	if (consume_token(OR)) {
 
 		//Code generation begin
-		i1 = rv->type.nElements<0 ? getRVal(rv) : lastInstruction;
+		i1 = rv->type.nElements < 0 ? getRVal(rv) : lastInstruction;
 		t1 = rv->type;
 		//Code generation end
 
 		if (expr_and(&rve)) {
-			if(expr_or1(rv)) {
+			if (expr_or1(rv)) {
 				if (rv->type.typeBase == TB_STRUCT || rve.type.typeBase == TB_STRUCT)
 					tkerr("a structure cannot be logically tested");
 
@@ -2234,7 +2083,8 @@ int expr_or1(RetVal *rv) {
 				rv->isCtVal = rv->isLVal = 0;
 			}
 			return 1;
-		}else
+		}
+		else
 			tkerr("Missing expression after '||'");
 	}
 	crntTk = startTk;
@@ -2259,7 +2109,7 @@ int expr_and1(RetVal *rv) {
 	if (consume_token(AND)) {
 
 		//Code generation begin
-		i1 = rv->type.nElements<0 ? getRVal(rv) : lastInstruction;
+		i1 = rv->type.nElements < 0 ? getRVal(rv) : lastInstruction;
 		t1 = rv->type;
 		//Code generation end
 
@@ -2277,9 +2127,9 @@ int expr_and1(RetVal *rv) {
 					addCastInstr(i1, &t1, &t);
 					addCastInstr(i2, &t2, &t);
 					switch (t.typeBase) {
-						case TB_INT:addInstr(O_AND_I); break;
-						case TB_DOUBLE:addInstr(O_AND_D); break;
-						case TB_CHAR:addInstr(O_AND_C); break;
+					case TB_INT:addInstr(O_AND_I); break;
+					case TB_DOUBLE:addInstr(O_AND_D); break;
+					case TB_CHAR:addInstr(O_AND_C); break;
 					}
 				}
 				//code generation end
@@ -2309,7 +2159,7 @@ int expr_eq1(RetVal *rv) {
 
 	//Code generation begin
 	Instr *i1, *i2; Type t, t1, t2;
-	i1 = rv->type.nElements<0 ? getRVal(rv) : lastInstruction;
+	i1 = rv->type.nElements < 0 ? getRVal(rv) : lastInstruction;
 	t1 = rv->type;
 	//Code generation end
 
@@ -2329,9 +2179,9 @@ int expr_eq1(RetVal *rv) {
 					addCastInstr(i1, &t1, &t);
 					addCastInstr(i2, &t2, &t);
 					switch (t.typeBase) {
-						case TB_INT:addInstr(O_EQ_I); break;
-						case TB_DOUBLE:addInstr(O_EQ_D); break;
-						case TB_CHAR:addInstr(O_EQ_C); break;
+					case TB_INT:addInstr(O_EQ_I); break;
+					case TB_DOUBLE:addInstr(O_EQ_D); break;
+					case TB_CHAR:addInstr(O_EQ_C); break;
 					}
 				}
 				//Code generation end
@@ -2359,9 +2209,9 @@ int expr_eq1(RetVal *rv) {
 					addCastInstr(i1, &t1, &t);
 					addCastInstr(i2, &t2, &t);
 					switch (t.typeBase) {
-						case TB_INT:addInstr(O_NOTEQ_I); break;
-						case TB_DOUBLE:addInstr(O_NOTEQ_D); break;
-						case TB_CHAR:addInstr(O_NOTEQ_C); break;
+					case TB_INT:addInstr(O_NOTEQ_I); break;
+					case TB_DOUBLE:addInstr(O_NOTEQ_D); break;
+					case TB_CHAR:addInstr(O_NOTEQ_C); break;
 
 					}
 				}
@@ -2402,7 +2252,7 @@ int expr_rel1(RetVal *rv) {
 		tkop = consumedTk;
 		if (expr_add(&rve)) {
 			if (expr_rel1(rv)) {
-				if (rv->type.nElements>-1 || rve.type.nElements>-1)
+				if (rv->type.nElements > -1 || rve.type.nElements > -1)
 					tkerr("an array cannot be compared");
 				if (rv->type.typeBase == TB_STRUCT || rve.type.typeBase == TB_STRUCT)
 					tkerr("a structure cannot be compared");
@@ -2413,9 +2263,9 @@ int expr_rel1(RetVal *rv) {
 				addCastInstr(i1, &t1, &t);
 				addCastInstr(i2, &t2, &t);
 				switch (t.typeBase) {
-					case TB_INT:addInstr(O_LESS_I); break;
-					case TB_DOUBLE:addInstr(O_LESS_D); break;
-					case TB_CHAR:addInstr(O_LESS_C); break;
+				case TB_INT:addInstr(O_LESS_I); break;
+				case TB_DOUBLE:addInstr(O_LESS_D); break;
+				case TB_CHAR:addInstr(O_LESS_C); break;
 				}
 				//Code generation end
 
@@ -2430,7 +2280,7 @@ int expr_rel1(RetVal *rv) {
 		tkop = consumedTk;
 		if (expr_add(&rve)) {
 			if (expr_rel1(rv)) {
-				if (rv->type.nElements>-1 || rve.type.nElements>-1)
+				if (rv->type.nElements > -1 || rve.type.nElements > -1)
 					tkerr("an array cannot be compared");
 				if (rv->type.typeBase == TB_STRUCT || rve.type.typeBase == TB_STRUCT)
 					tkerr("a structure cannot be compared");
@@ -2441,9 +2291,9 @@ int expr_rel1(RetVal *rv) {
 				addCastInstr(i1, &t1, &t);
 				addCastInstr(i2, &t2, &t);
 				switch (t.typeBase) {
-					case TB_INT:addInstr(O_LESSEQ_I); break;
-					case TB_DOUBLE:addInstr(O_LESSEQ_D); break;
-					case TB_CHAR:addInstr(O_LESSEQ_C); break;
+				case TB_INT:addInstr(O_LESSEQ_I); break;
+				case TB_DOUBLE:addInstr(O_LESSEQ_D); break;
+				case TB_CHAR:addInstr(O_LESSEQ_C); break;
 				}
 				//Code generation end
 
@@ -2469,9 +2319,9 @@ int expr_rel1(RetVal *rv) {
 				addCastInstr(i1, &t1, &t);
 				addCastInstr(i2, &t2, &t);
 				switch (t.typeBase) {
-					case TB_INT:addInstr(O_GREATER_I); break;
-					case TB_DOUBLE:addInstr(O_GREATER_D); break;
-					case TB_CHAR:addInstr(O_GREATER_C); break;
+				case TB_INT:addInstr(O_GREATER_I); break;
+				case TB_DOUBLE:addInstr(O_GREATER_D); break;
+				case TB_CHAR:addInstr(O_GREATER_C); break;
 				}
 				//Code generation end
 
@@ -2497,9 +2347,9 @@ int expr_rel1(RetVal *rv) {
 				addCastInstr(i1, &t1, &t);
 				addCastInstr(i2, &t2, &t);
 				switch (t.typeBase) {
-					case TB_INT:addInstr(O_GREATEREQ_I); break;
-					case TB_DOUBLE:addInstr(O_GREATEREQ_D); break;
-					case TB_CHAR:addInstr(O_GREATEREQ_C); break;
+				case TB_INT:addInstr(O_GREATEREQ_I); break;
+				case TB_DOUBLE:addInstr(O_GREATEREQ_D); break;
+				case TB_CHAR:addInstr(O_GREATEREQ_C); break;
 				}
 				//Code generation end
 
@@ -2547,9 +2397,9 @@ int expr_add1(RetVal *rv) {
 				addCastInstr(i1, &t1, &rv->type);
 				addCastInstr(i2, &t2, &rv->type);
 				switch (rv->type.typeBase) {
-					case TB_INT:addInstr(O_ADD_I); break;
-					case TB_DOUBLE:addInstr(O_ADD_D); break;
-					case TB_CHAR:addInstr(O_ADD_C); break;
+				case TB_INT:addInstr(O_ADD_I); break;
+				case TB_DOUBLE:addInstr(O_ADD_D); break;
+				case TB_CHAR:addInstr(O_ADD_C); break;
 				}
 				//Code generation end
 
@@ -2573,9 +2423,9 @@ int expr_add1(RetVal *rv) {
 				addCastInstr(i1, &t1, &rv->type);
 				addCastInstr(i2, &t2, &rv->type);
 				switch (rv->type.typeBase) {
-					case TB_INT:addInstr(O_SUB_I); break;
-					case TB_DOUBLE:addInstr(O_SUB_D); break;
-					case TB_CHAR:addInstr(O_SUB_C); break;
+				case TB_INT:addInstr(O_SUB_I); break;
+				case TB_DOUBLE:addInstr(O_SUB_D); break;
+				case TB_CHAR:addInstr(O_SUB_C); break;
 				}
 				//Code generation end
 
@@ -2610,8 +2460,8 @@ int expr_mul1(RetVal *rv) {
 
 	if (consume_token(MUL)) {
 		if (expr_cast(&rve)) {
-			if(expr_mul1(rv)){
-				if (rv->type.nElements>-1 || rve.type.nElements>-1)
+			if (expr_mul1(rv)) {
+				if (rv->type.nElements > -1 || rve.type.nElements > -1)
 					tkerr("an array cannot be multiplied");
 				if (rv->type.typeBase == TB_STRUCT || rve.type.typeBase == TB_STRUCT)
 					tkerr("a structure cannot be multiplied");
@@ -2622,9 +2472,9 @@ int expr_mul1(RetVal *rv) {
 				addCastInstr(i1, &t1, &rv->type);
 				addCastInstr(i2, &t2, &rv->type);
 				switch (rv->type.typeBase) {
-					case TB_INT:addInstr(O_MUL_I); break;
-					case TB_DOUBLE:addInstr(O_MUL_D); break;
-					case TB_CHAR:addInstr(O_MUL_C); break;
+				case TB_INT:addInstr(O_MUL_I); break;
+				case TB_DOUBLE:addInstr(O_MUL_D); break;
+				case TB_CHAR:addInstr(O_MUL_C); break;
 				}
 				//Code generation end
 
@@ -2637,7 +2487,7 @@ int expr_mul1(RetVal *rv) {
 	if (consume_token(DIV)) {
 		if (expr_cast(&rve)) {
 			if (expr_mul1(rv)) {
-				if (rv->type.nElements>-1 || rve.type.nElements>-1)
+				if (rv->type.nElements > -1 || rve.type.nElements > -1)
 					tkerr("an array cannot be divided");
 				if (rv->type.typeBase == TB_STRUCT || rve.type.typeBase == TB_STRUCT)
 					tkerr("a structure cannot be divided");
@@ -2648,9 +2498,9 @@ int expr_mul1(RetVal *rv) {
 				addCastInstr(i1, &t1, &rv->type);
 				addCastInstr(i2, &t2, &rv->type);
 				switch (rv->type.typeBase) {
-					case TB_INT:addInstr(O_DIV_I); break;
-					case TB_DOUBLE:addInstr(O_DIV_D); break;
-					case TB_CHAR:addInstr(O_DIV_C); break;
+				case TB_INT:addInstr(O_DIV_I); break;
+				case TB_DOUBLE:addInstr(O_DIV_D); break;
+				case TB_CHAR:addInstr(O_DIV_C); break;
 				}
 				//Code generation end
 
@@ -2683,7 +2533,7 @@ int expr_cast(RetVal *rv) {
 					cast(&type, &rve.type);
 
 					//Code generation begin
-					if (rv->type.nElements<0 && rv->type.typeBase != TB_STRUCT) {
+					if (rv->type.nElements < 0 && rv->type.typeBase != TB_STRUCT) {
 						switch (rve.type.typeBase) {
 						case TB_CHAR:
 							switch (type.typeBase) {
@@ -2712,9 +2562,11 @@ int expr_cast(RetVal *rv) {
 					return 1;
 				}
 				tkerr("Missing expression in cast");
-			}else
+			}
+			else
 				tkerr("Missing ')' at expression cast");
-		}else
+		}
+		else
 			tkerr("Missing type name in cast");
 	}
 	if (expr_unary(rv))
@@ -2737,9 +2589,9 @@ int expr_unary(RetVal *rv) {
 			//Code generation begin
 			getRVal(rv);
 			switch (rv->type.typeBase) {
-				case TB_CHAR:addInstr(O_NEG_C); break;
-				case TB_INT:addInstr(O_NEG_I); break;
-				case TB_DOUBLE:addInstr(O_NEG_D); break;
+			case TB_CHAR:addInstr(O_NEG_C); break;
+			case TB_INT:addInstr(O_NEG_I); break;
+			case TB_DOUBLE:addInstr(O_NEG_D); break;
 			}
 			//Code generation end
 
@@ -2755,12 +2607,12 @@ int expr_unary(RetVal *rv) {
 				tkerr("'!' cannot be applied to a struct");
 
 			//Code generation begin
-			if (rv->type.nElements<0) {
+			if (rv->type.nElements < 0) {
 				getRVal(rv);
 				switch (rv->type.typeBase) {
-					case TB_CHAR:addInstr(O_NOT_C); break;
-					case TB_INT:addInstr(O_NOT_I); break;
-					case TB_DOUBLE:addInstr(O_NOT_D); break;
+				case TB_CHAR:addInstr(O_NOT_C); break;
+				case TB_INT:addInstr(O_NOT_I); break;
+				case TB_DOUBLE:addInstr(O_NOT_D); break;
 				}
 			}
 			else
@@ -2779,14 +2631,14 @@ int expr_unary(RetVal *rv) {
 	return 0;
 }
 
-int expr_postfix1(RetVal *rv){
+int expr_postfix1(RetVal *rv) {
 	Token *startTk = crntTk;
 	RetVal rve;
 	if (consume_token(LBRACKET)) {
 		if (expr(&rve)) {
 			if (consume_token(RBRACKET)) {
 				if (expr_postfix1(rv)) {
-					if (rv->type.nElements<0)
+					if (rv->type.nElements < 0)
 						tkerr("only an array can be indexed");
 					Type typeInt = createType(TB_INT, -1);
 					cast(&typeInt, &rve.type);
@@ -2808,9 +2660,11 @@ int expr_postfix1(RetVal *rv){
 					//code generation end
 
 				}
-			}else
+			}
+			else
 				tkerr("Missing ']' in postfix expression");
-		}else
+		}
+		else
 			tkerr("Missing expression in postfix expression");
 	}
 	if (consume_token(DOT)) {
@@ -2834,7 +2688,8 @@ int expr_postfix1(RetVal *rv){
 				}
 				//code generation end
 			}
-		}else
+		}
+		else
 			tkerr("Missing ID in postfix expression");
 	}
 	crntTk = startTk;
@@ -2876,7 +2731,7 @@ int expr_primary(RetVal *rv) {
 				cast(&(*crtDefArg)->type, &arg.type);
 
 				//Code generation begin
-				if ((*crtDefArg)->type.nElements<0)   //only arrays are passed by addr
+				if ((*crtDefArg)->type.nElements < 0)   //only arrays are passed by addr
 					i = getRVal(&arg);
 				else
 					i = lastInstruction;
@@ -2893,7 +2748,7 @@ int expr_primary(RetVal *rv) {
 						cast(&(*crtDefArg)->type, &arg.type);
 
 						//Code generation begin
-						if ((*crtDefArg)->type.nElements<0)
+						if ((*crtDefArg)->type.nElements < 0)
 							i = getRVal(&arg);
 						else
 							i = lastInstruction;
@@ -2999,7 +2854,8 @@ int expr_primary(RetVal *rv) {
 				return 1;
 			}
 			tkerr("Missing ')' in expression");
-		}else
+		}
+		else
 			tkerr("Missing expression after '('");
 	}
 	crntTk = startTk;
@@ -3056,7 +2912,6 @@ int decl_struct() {
 					if (decl_var())
 						continue;
 					break;
-
 				}
 				if (consume_token(RACC)) {
 					if (consume_token(SEMICOLON)) {
@@ -3065,11 +2920,14 @@ int decl_struct() {
 					}
 					else
 						tkerr("Missing semicolon at struct declaration");
-				}else
+				}
+				else
 					tkerr("Missing '}' at structure declaration");
-			}else
+			}
+			else
 				tkerr("Missing '{' at structure declaration");
-		}else
+		}
+		else
 			tkerr("Missing structure ID at structure declaration");
 	}
 	crntTk = startTk;
@@ -3091,11 +2949,12 @@ int decl_var() {
 				if (consume_token(COMMA)) {
 					Token *tk_name1 = crntTk;
 					if (consume_token(ID)) {
-						if(!array_decl(&type))
+						if (!array_decl(&type))
 							type.nElements = -1;
 						addVar(tk_name1, &type);
 						continue;
-					}else
+					}
+					else
 						tkerr("Missing ID after comma at variable declaration");
 				}
 				break;
@@ -3106,7 +2965,8 @@ int decl_var() {
 			}
 			else
 				tkerr("Missing ';' at the end of the variable declaration");
-		}else
+		}
+		else
 			tkerr("Missing ID at variable declaration");
 	}
 	crntTk = startTk;
@@ -3155,7 +3015,7 @@ int array_decl(Type *ret) {
 
 int type_name(Type *ret) {
 	if (typebase(ret)) {
-		if(!array_decl(ret))
+		if (!array_decl(ret))
 			ret->nElements = -1;
 		//printf("Type name\n");
 		return 1;
